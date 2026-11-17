@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.tmp
+config.json
+users.json
+user_stats.json
+gmail_tasks.json
+facebook_tasks.json
+instagram_tasks.json
