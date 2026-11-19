@@ -35,7 +35,7 @@ from telegram.ext import (
 )
 
 logging.basicConfig(
-    format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFOঝ
 )
 
 # ╔══════════════════════════════════════════════════════════════╗
