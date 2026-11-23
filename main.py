@@ -1708,3 +1708,311 @@ def main():
 
 if __name__ == "__main__":
     main()
+import json
+import os
+from telebot import types
+
+# ==========================================
+# কনফিগারেশন
+# ==========================================
+ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))
+FB_PRICE = 3
+TASKS_FILE = "fb_tasks.json"
+
+# ইউজারের স্টেট ও সাময়িক তথ্য
+fb_user_states = {}
+fb_user_data = {}
+admin_states = {}
+admin_temp_task = {}
+
+
+def load_active_task():
+    """সেভ করা বর্তমান একটিভ ফেসবুক কাজ লোড করে"""
+    if not os.path.exists(TASKS_FILE):
+        return None
+    try:
+        with open(TASKS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if (
+                isinstance(data, dict)
+                and data.get("first_name")
+                and data.get("last_name")
+                and data.get("password")
+            ):
+                return data
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"[load_active_task] error: {e}")
+    return None
+
+
+def save_active_task(task_data):
+    """নতুন ফেসবুক কাজ ফাইলে সেভ করে"""
+    try:
+        with open(TASKS_FILE, "w", encoding="utf-8") as f:
+            json.dump(task_data, f, ensure_ascii=False, indent=2)
+        return True
+    except OSError as e:
+        print(f"[save_active_task] error: {e}")
+        return False
+
+
+def register_fb_work_handlers(bot, back_to_menu_callback=None):
+    """
+    main.py ফাইলের শেষের দিকে এই ফাংশনটি কল করবে।
+    """
+
+    def go_back_menu(chat_id):
+        if callable(back_to_menu_callback):
+            back_to_menu_callback(chat_id)
+        else:
+            bot.send_message(chat_id, "🔙 আপনি আগের মেনুতে ফিরে এসেছেন।")
+
+    # ==========================================
+    # অ্যাডমিন কাজ অ্যাড করার কমান্ড: /addfb
+    # ==========================================
+    @bot.message_handler(commands=["addfb"])
+    def start_add_fb_task(message):
+        if message.from_user.id != ADMIN_ID:
+            bot.send_message(message.chat.id, "⛔ এই কমান্ডটি শুধুমাত্র অ্যাডমিনের জন্য।")
+            return
+
+        chat_id = message.chat.id
+        # পুরনো state পরিষ্কার করা
+        admin_states[chat_id] = "WAIT_FB_FIRST_NAME"
+        admin_temp_task[chat_id] = {}
+
+        bot.send_message(chat_id, "➕ নতুন ফেসবুক কাজ অ্যাড করুন:\n\n১. First Name দিন:")
+
+    # অ্যাডমিনের দেওয়া কাজ গ্রহণ করা
+    @bot.message_handler(
+        func=lambda message: message.from_user.id == ADMIN_ID
+        and admin_states.get(message.chat.id)
+        in ["WAIT_FB_FIRST_NAME", "WAIT_FB_LAST_NAME", "WAIT_FB_PASSWORD"]
+    )
+    def handle_admin_add_task_steps(message):
+        chat_id = message.chat.id
+        state = admin_states.get(chat_id)
+        text = (message.text or "").strip()
+
+        if not text:
+            bot.send_message(chat_id, "⚠️ খালি রাখা যাবে না, সঠিক তথ্য দিন:")
+            return
+
+        if state == "WAIT_FB_FIRST_NAME":
+            admin_temp_task.setdefault(chat_id, {})["first_name"] = text
+            admin_states[chat_id] = "WAIT_FB_LAST_NAME"
+            bot.send_message(chat_id, "২. Last Name দিন:")
+            return
+
+        if state == "WAIT_FB_LAST_NAME":
+            admin_temp_task[chat_id]["last_name"] = text
+            admin_states[chat_id] = "WAIT_FB_PASSWORD"
+            bot.send_message(chat_id, "৩. Password দিন:")
+            return
+
+        if state == "WAIT_FB_PASSWORD":
+            admin_temp_task[chat_id]["password"] = text
+            task_data = {
+                "first_name": admin_temp_task[chat_id]["first_name"],
+                "last_name": admin_temp_task[chat_id]["last_name"],
+                "password": admin_temp_task[chat_id]["password"],
+            }
+
+            if not save_active_task(task_data):
+                bot.send_message(chat_id, "❌ কাজ সেভ করতে সমস্যা হয়েছে, আবার চেষ্টা করুন।")
+                return
+
+            admin_states.pop(chat_id, None)
+            admin_temp_task.pop(chat_id, None)
+
+            bot.send_message(
+                chat_id,
+                "✅ নতুন ফেসবুক কাজ সফলভাবে অ্যাড করা হয়েছে! এখন ইউজাররা এটি দেখতে পাবে:\n\n"
+                f"First Name: {task_data['first_name']}\n"
+                f"Last Name: {task_data['last_name']}\n"
+                f"Password: {task_data['password']}",
+            )
+
+    # ==========================================
+    # ১. "ফেসবুকের কাজ" অপশনে ক্লিক করলে
+    # ==========================================
+    @bot.message_handler(func=lambda message: (message.text or "").strip() == "ফেসবুকের কাজ")
+    def handle_fb_work_button(message):
+        chat_id = message.chat.id
+        fb_user_states.pop(chat_id, None)
+        fb_user_data.pop(chat_id, None)
+
+        active_task = load_active_task()
+        if not active_task:
+            bot.send_message(chat_id, "ℹ️ বর্তমানে ফেসবুকের কোনো কাজ চালু নেই।")
+            return
+
+        markup = types.InlineKeyboardMarkup()
+        price_btn = types.InlineKeyboardButton(
+            text=f"একটি facebook একাউন্টের দাম {FB_PRICE} টাকা",
+            callback_data="fb_open_account_details",
+        )
+        markup.add(price_btn)
+
+        bot.send_message(chat_id, "💼 ফেসবুকের কাজ:", reply_markup=markup)
+
+    # ==========================================
+    # ২. অ্যাকাউন্টের তথ্য দেখানো
+    # ==========================================
+    @bot.callback_query_handler(func=lambda call: call.data == "fb_open_account_details")
+    def handle_fb_account_details(call):
+        bot.answer_callback_query(call.id)
+
+        if not call.message:
+            return
+
+        chat_id = call.message.chat.id
+        active_task = load_active_task()
+        if not active_task:
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=call.message.message_id,
+                text="ℹ️ বর্তমানে ফেসবুকের কোনো কাজ চালু নেই।",
+            )
+            return
+
+        details_text = (
+            "📌 ফেসবুক অ্যাকাউন্টের তথ্য:\n\n"
+            f"First Name: {active_task['first_name']}\n"
+            f"Last Name: {active_task['last_name']}\n"
+            f"Password: {active_task['password']}"
+        )
+
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        uid_btn = types.InlineKeyboardButton(text="UID দিন", callback_data="fb_ask_uid")
+        cancel_btn = types.InlineKeyboardButton(text="ক্যানসেল", callback_data="fb_cancel")
+        markup.add(uid_btn, cancel_btn)
+
+        bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=call.message.message_id,
+            text=details_text,
+            reply_markup=markup,
+        )
+
+    # ==========================================
+    # ৩. "ক্যানসেল"
+    # ==========================================
+    @bot.callback_query_handler(func=lambda call: call.data == "fb_cancel")
+    def handle_fb_cancel(call):
+        bot.answer_callback_query(call.id, "ক্যানসেল করা হয়েছে")
+
+        if not call.message:
+            return
+
+        chat_id = call.message.chat.id
+        fb_user_states.pop(chat_id, None)
+        fb_user_data.pop(chat_id, None)
+
+        try:
+            bot.delete_message(chat_id, call.message.message_id)
+        except Exception:
+            pass
+
+        go_back_menu(chat_id)
+
+    # ==========================================
+    # ৪. "UID দিন"
+    # ==========================================
+    @bot.callback_query_handler(func=lambda call: call.data == "fb_ask_uid")
+    def handle_fb_ask_uid(call):
+        bot.answer_callback_query(call.id)
+
+        if not call.message:
+            return
+
+        chat_id = call.message.chat.id
+        fb_user_states[chat_id] = "WAIT_UID"
+        fb_user_data[chat_id] = {}
+
+        bot.send_message(
+            chat_id,
+            "📝 আপনার ফেসবুক অ্যাকাউন্টের ১৪ থেকে ১৬ সংখ্যার UID-টি দিন:",
+        )
+
+    # ==========================================
+    # ৫. UID এবং Cookies গ্রহণ
+    # ==========================================
+    @bot.message_handler(
+        func=lambda message: fb_user_states.get(message.chat.id)
+        in ["WAIT_UID", "WAIT_COOKIES"]
+    )
+    def handle_fb_uid_and_cookies(message):
+        chat_id = message.chat.id
+        state = fb_user_states.get(chat_id)
+        user_input = (message.text or "").strip()
+
+        if state == "WAIT_UID":
+            if not user_input.isdigit() or not (14 <= len(user_input) <= 16):
+                bot.send_message(
+                    chat_id,
+                    "⚠️ অনুগ্রহ করে সঠিক ১৪ থেকে ১৬ সংখ্যার UID দিন:\n\n"
+                    "📝 আপনার ফেসবুক অ্যাকাউন্টের ১৪ থেকে ১৬ সংখ্যার UID-টি দিন:",
+                )
+                return
+
+            fb_user_data.setdefault(chat_id, {})["uid"] = user_input
+            fb_user_states[chat_id] = "WAIT_COOKIES"
+
+            bot.send_message(
+                chat_id,
+                "🍪 এবার আপনার ফেসবুক অ্যাকাউন্টের Cookies-টি দিন:",
+            )
+            return
+
+        if state == "WAIT_COOKIES":
+            if not user_input:
+                bot.send_message(
+                    chat_id,
+                    "⚠️ সঠিক Cookies দিন:\n\n🍪 এবার আপনার ফেসবুক অ্যাকাউন্টের Cookies-টি দিন:",
+                )
+                return
+
+            uid = fb_user_data.get(chat_id, {}).get("uid", "")
+            cookies = user_input
+            active_task = load_active_task() or {}
+
+            first_name = message.from_user.first_name or ""
+            last_name = message.from_user.last_name or ""
+            full_name = f"{first_name} {last_name}".strip() or "Unknown"
+            username = (
+                f"@{message.from_user.username}"
+                if message.from_user.username
+                else "নেই"
+            )
+
+            admin_message = (
+                "📥 নতুন ফেসবুক কাজের তথ্য এসেছে!\n\n"
+                f"👤 ইউজার: {full_name} ({username})\n"
+                f"🆔 ইউজার ID: {chat_id}\n"
+                f"💵 মূল্য: {FB_PRICE} টাকা\n\n"
+                "🔹 অ্যাডমিনের দেওয়া অ্যাকাউন্ট তথ্য:\n"
+                f"First Name: {active_task.get('first_name', 'N/A')}\n"
+                f"Last Name: {active_task.get('last_name', 'N/A')}\n"
+                f"Password: {active_task.get('password', 'N/A')}\n\n"
+                "🔹 ইউজারের দেওয়া তথ্য:\n"
+                f"UID: {uid}\n"
+                f"Cookies: {cookies}"
+            )
+
+            # Telegram-এর message limit (4096) মেনে পাঠানো
+            if len(admin_message) <= 4096:
+                bot.send_message(ADMIN_ID, admin_message)
+            else:
+                bot.send_message(
+                    ADMIN_ID,
+                    admin_message[:4000]
+                    + "\n\n⚠️ ... (বাকি অংশ বাদ পড়েছে, দৈর্ঘ্য সীমা অতিক্রম)",
+                )
+                # বাকি অংশ আলাদা মেসেজে
+                bot.send_message(ADMIN_ID, "🔻 Cookies (বাকি অংশ):\n" + cookies)
+
+            fb_user_states.pop(chat_id, None)
+            fb_user_data.pop(chat_id, None)
+
+            bot.send_message(chat_id, "✅ আপনার UID এবং Cookies সফলভাবে জমা হয়েছে।")
